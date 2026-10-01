@@ -11,9 +11,10 @@
   canonical.py  确定性 JSON / HMAC（与 dpgw 规范编码一致，便于离线互验）
   merkle.py     RFC 9162 风格 Merkle 纯函数（叶哈希/折根/包含路径）
   errors.py     稳定错误码与 HTTP 状态
-  store.py      独立 SQLite 持久化（镜像、租户、位点、租约、事件）
+  store.py      独立 SQLite 持久化（镜像、租户、连续提交屏障、窗口租约、事件）
   upstream.py   网关只读接口客户端（只 GET，验不过即抛 UpstreamError）
-  relay.py      核心：同步推进、筛选、短租约投递、确认与拒绝语义
+  relay.py      核心：同步推进、筛选、并行窗口租约/超时接管/完成、
+                连续提交屏障（乱序完成补洞一次推进）、拒绝语义
   verify.py     离线投递包校验器（只需 relay 自己的 secrets.json）
   server.py     ThreadingHTTPServer JSON API（租户侧 + 管理侧）
   webui.py      零依赖运维单页（/ui）

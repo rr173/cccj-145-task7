@@ -3,17 +3,24 @@
 租户侧（租户令牌 ``dprt_…``）::
 
     POST /v1/relay/claim   {"consumer": "...", "ttl_seconds"?: int}
-    POST /v1/relay/ack     {"delivery_id","end_index","consumer"}
-    GET  /v1/relay/status
+    POST /v1/relay/ack     {"delivery_id","end_index","consumer",
+                            "lease_token"?}     # 与 /complete 等价
+    POST /v1/relay/complete  同 /ack（并行窗口语义命名）
+    GET  /v1/relay/status   本租户镜像、连续提交屏障、窗口清单、空洞、重试、拒绝
+    GET  /v1/relay/windows  本租户窗口清单（可 ?committed=1）
     GET  /v1/relay/mirror
 
 管理侧（管理员令牌 ``afra_…``，前缀 /v1/admin）::
 
-    GET  /v1/admin/status                 镜像/全部租户/拒绝/事件
+    GET  /v1/admin/status                 镜像/全部租户/窗口/拒绝/事件
     POST /v1/admin/sync                   立即触发一轮拉取
     GET  /v1/admin/mirror/leaves
-    POST /v1/admin/tenants                创建租户（返回一次性令牌）
+    POST /v1/admin/tenants                创建租户（可带 max_inflight）
     GET  /v1/admin/tenants
+    GET  /v1/admin/tenants/<id>/windows   窗口清单/提交屏障/空洞
+    POST /v1/admin/tenants/<id>/max-inflight  动态收缩/放大在途窗口上限
+    POST /v1/admin/tenants/<id>/deliveries/<did>/force-expire
+                                          强制租约到期（观察超时接管）
     POST /v1/admin/tenants/<id>/filter    消费开始前可改；开始后 409
     POST /v1/admin/tenants/<id>/deactivate
     GET  /ui                              运维单页
@@ -139,12 +146,22 @@ class _Handler(BaseHTTPRequestHandler):
         did = body.get("delivery_id")
         if not isinstance(did, str) or not did:
             raise InvalidBody("delivery_id is required")
-        resp = self.relay.ack(
-            self._tenant_token(), did, end, str(body.get("consumer") or ""))
+        resp = self.relay.complete(
+            self._tenant_token(), did, end, str(body.get("consumer") or ""),
+            lease_token=body.get("lease_token"))
         self._send(200, resp)
 
     def ep_tenant_status(self):
         self._send(200, self.relay.tenant_status(self._tenant_token()))
+
+    def ep_tenant_windows(self):
+        token = self._tenant_token()
+        row = self.relay._tenant_by_token(token)
+        q = self._query()
+        self._send(200, self.relay.tenant_windows(
+            row["tenant_id"],
+            include_committed=q.get("committed") in ("1", "true", "yes"),
+            limit=int(q.get("limit", "200"))))
 
     def ep_mirror_public(self):
         self._send(200, self.relay.mirror_status())
@@ -179,7 +196,8 @@ class _Handler(BaseHTTPRequestHandler):
         if not isinstance(tid, str) or not tid:
             raise InvalidBody("tenant_id is required")
         resp = self.relay.create_tenant(tid, str(name), body.get("filter"),
-                                        token=self._bearer())
+                                        token=self._bearer(),
+                                        max_inflight=body.get("max_inflight"))
         self._send(201, resp)
 
     def ep_admin_filter(self, tenant_id: str):
@@ -193,6 +211,28 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(200, self.relay.deactivate_tenant(
             tenant_id, str(body.get("reason") or "")))
 
+    def ep_admin_max_inflight(self, tenant_id: str):
+        self._admin()
+        body = self._read_json()
+        value = body.get("max_inflight")
+        if not isinstance(value, int):
+            raise InvalidBody("max_inflight (integer) is required")
+        self._send(200, self.relay.set_max_inflight(tenant_id, value))
+
+    def ep_admin_tenant_windows(self, tenant_id: str):
+        self._admin()
+        q = self._query()
+        self._send(200, self.relay.tenant_windows(
+            tenant_id,
+            include_committed=q.get("committed") in ("1", "true", "yes"),
+            limit=int(q.get("limit", "200"))))
+
+    def ep_admin_force_expire(self, tenant_id: str, delivery_id: str):
+        self._admin()
+        body = self._read_json()
+        self._send(200, self.relay.force_expire_window(
+            tenant_id, delivery_id, reason=str(body.get("reason") or "")))
+
 
 def _build_routes() -> dict[str, dict]:
     import re
@@ -202,17 +242,25 @@ def _build_routes() -> dict[str, dict]:
 
     get = [
         ("/v1/relay/status", _Handler.ep_tenant_status),
+        ("/v1/relay/windows", _Handler.ep_tenant_windows),
         ("/v1/relay/mirror", _Handler.ep_mirror_public),
         ("/v1/admin/status", _Handler.ep_admin_status),
         ("/v1/admin/mirror/leaves", _Handler.ep_admin_leaves),
         ("/v1/admin/tenants", _Handler.ep_admin_tenants_list),
+        ("/v1/admin/tenants/<tenant_id>/windows",
+         _Handler.ep_admin_tenant_windows),
     ]
     post = [
         ("/v1/relay/claim", _Handler.ep_claim),
         ("/v1/relay/ack", _Handler.ep_ack),
+        ("/v1/relay/complete", _Handler.ep_ack),
         ("/v1/admin/sync", _Handler.ep_admin_sync),
         ("/v1/admin/tenants", _Handler.ep_admin_tenants_create),
         ("/v1/admin/tenants/<tenant_id>/filter", _Handler.ep_admin_filter),
+        ("/v1/admin/tenants/<tenant_id>/max-inflight",
+         _Handler.ep_admin_max_inflight),
+        ("/v1/admin/tenants/<tenant_id>/deliveries/<delivery_id>/force-expire",
+         _Handler.ep_admin_force_expire),
         ("/v1/admin/tenants/<tenant_id>/deactivate",
          _Handler.ep_admin_deactivate),
     ]

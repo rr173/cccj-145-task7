@@ -1,8 +1,11 @@
 """零依赖运维单页（/ui）。
 
-展示镜像高度、上游观察高度/冻结、停止原因、各租户位点/积压/租约持有者/
-重试次数、拒绝原因统计与最近事件；支持管理员触发立即同步、停用/创建租户。
-纯原生 HTML/JS，单文件内嵌。
+展示镜像高度、上游观察高度/冻结、停止原因；每个租户的**连续提交屏障**、
+最大在途窗口数与在途数、每个**窗口**（相邻区间 [start,end)、持有者、
+leased/completed/committed 状态、租约 epoch/到期/重试次数）、挡住屏障的
+阻塞窗口与未覆盖空洞、拒绝原因、最近事件。支持管理员触发立即同步、
+动态收缩/放大在途上限、强制窗口超时接管、停用/创建租户。纯原生 HTML/JS，
+单文件内嵌。
 """
 
 from __future__ import annotations
@@ -55,6 +58,19 @@ INDEX_HTML = r"""<!doctype html>
           font-size:12px; word-break:break-all; }
   .muted { color:var(--muted); }
   .span2 { grid-column:1 / -1; }
+  .stack { display:flex; flex-direction:column; gap:12px; }
+  .tblock { border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .tblock.head { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .tblock .meta { color:var(--muted); font-size:12px; }
+  .winbar { display:flex; gap:4px; flex-wrap:wrap; margin:8px 0; }
+  .win { border:1px solid var(--line); border-radius:6px; padding:3px 8px;
+         font-size:12px; font-variant-numeric:tabular-nums; }
+  .win.leased { border-color:var(--warn); color:var(--warn); }
+  .win.completed { border-color:var(--accent); color:var(--accent); }
+  .win.committed { border-color:var(--ok); color:var(--ok); }
+  .win .own { color:var(--muted); }
+  .hole { border:1px dashed var(--bad); color:var(--bad); border-radius:6px;
+          padding:3px 8px; font-size:12px; }
   label { font-size:12px; color:var(--muted); display:block; margin:6px 0 2px; }
   #msg { color:var(--warn); font-size:12px; }
 </style>
@@ -78,18 +94,15 @@ INDEX_HTML = r"""<!doctype html>
     <div id="rejects" class="row"></div>
   </section>
   <section class="card span2">
-    <h2>审计租户：位点 / 积压 / 租约持有者 / 重试</h2>
-    <table><thead><tr>
-      <th>租户</th><th>状态</th><th class="num">位点末端</th>
-      <th class="num">镜像高</th><th class="num">原始积压</th>
-      <th class="num">匹配积压</th><th>当前租约</th><th class="num">重试</th>
-      <th>筛选</th><th></th>
-    </tr></thead><tbody id="tenants"></tbody></table>
+    <h2>审计租户：连续提交屏障 / 在途窗口 / 持有者 / 空洞 / 重试</h2>
+    <div id="tenantblocks" class="stack"></div>
   </section>
   <section class="card">
     <h2>新建租户</h2>
     <label>tenant_id</label><input id="nid" placeholder="auditor-a">
     <label>名称</label><input id="nname" placeholder="A 组审计员">
+    <label>最大在途窗口数（可之后动态收缩）</label>
+    <input id="ninf" type="number" min="1" max="1024" value="8">
     <label>筛选（JSON，留空匹配全部）</label>
     <textarea id="nfilter" rows="3" style="width:100%"
       placeholder='{"event_types":["release_sealed","share_issued"]}'></textarea>
@@ -150,27 +163,71 @@ function renderRejects(rc){
     : '<span class="muted">无拒绝</span>';
 }
 function renderTenants(ts){
-  document.getElementById('tenants').innerHTML = ts.map(t=>{
-    const d = t.current_delivery;
-    const lease = d ? `<div>${pill('leased to '+esc(d.lease_owner),'warn')}
-        ${d.lease_expired?pill('已超时','bad'):''}
-        <div class="muted mono">${esc(d.delivery_id)}<br>until ${iso(d.lease_expires_at)}</div></div>`
-      : '<span class="muted">无在途包</span>';
-    const f = JSON.stringify(t.filter);
-    return `<tr>
-      <td><b>${esc(t.tenant_id)}</b><br><span class="muted">${esc(t.name)}</span></td>
-      <td>${t.active?pill('active','ok'):pill('已停用','bad')}
-          ${t.filter_locked?pill('规则已锁定','warn'):''}</td>
-      <td class="num">${t.cursor_end}</td>
-      <td class="num">${t.mirror_tree_size}</td>
-      <td class="num">${t.backlog}</td>
-      <td class="num">${t.backlog_matching}</td>
-      <td>${lease}</td>
-      <td class="num">${d?d.retries:0}</td>
-      <td class="mono" style="max-width:210px">${esc(f)}</td>
-      <td>${t.active?`<button class="danger" onclick="deact('${esc(t.tenant_id)}')">停用</button>`:''}</td>
-    </tr>`;
-  }).join('') || '<tr><td colspan="10" class="muted">尚无租户</td></tr>';
+  document.getElementById('tenantblocks').innerHTML = ts.map(t=>{
+    const id = esc(t.tenant_id);
+    const acts = t.active
+      ? `<button class="danger" onclick="deact('${id}')">停用</button>
+         <button class="ghost" onclick="shrink('${id}')">调整在途上限</button>`
+      : '';
+    const wins = (t.windows||[]).map(w=>{
+      const tip = `#${w.seq} [${w.start_index},${w.end_index}) owner=${esc(w.lease_owner)} `
+        + `epoch=${w.lease_epoch} retries=${w.retries}`
+        + (w.lease_expired?' EXPIRED':'');
+      const fe = (t.active && w.state==='leased')
+        ? ` <a href="#" title="强制该窗口立即超时，供新 worker 接管" `
+          + `onclick="forceExpire('${id}','${esc(w.delivery_id)}');return false;">⏱</a>` : '';
+      return `<span class="win ${w.state}" title="${tip}">`
+        + `[${w.start_index},${w.end_index}) ${w.state}`
+        + ` <span class="own">${esc(w.lease_owner||'')}×${w.retries}</span>${fe}</span>`;
+    }).join('');
+    const holes = (t.holes||[]).map(h=>
+      `<span class="hole" title="未被窗口覆盖的原始序号空洞">`
+      + `空洞 [${h.from},${h.to})</span>`).join('');
+    const block = t.blocking_window
+      ? pill('阻塞窗口 #'+t.blocking_window.seq+' ('
+        +esc(t.blocking_window.lease_owner)+')','bad')
+      : (t.inflight===0 ? pill('无在途窗口','ok')
+                        : pill('窗口全部完成待补洞','warn'));
+    return `<div class="tblock">
+      <div class="head">
+        <b>${id}</b> <span class="muted">${esc(t.name)}</span>
+        ${t.active?pill('active','ok'):pill('已停用','bad')}
+        ${t.filter_locked?pill('规则已锁定','warn'):''}
+        ${block}
+        <span class="meta">提交屏障 <b>${t.commit_barrier}</b></span>
+        <span class="meta">在途 ${t.inflight}/${t.max_inflight}</span>
+        <span class="meta">发放前沿 ${t.frontier} · 镜像高 ${t.mirror_tree_size}</span>
+        <span class="meta">原始积压 ${t.backlog} · 匹配积压 ${t.backlog_matching}</span>
+        <span style="flex:1"></span>${acts}
+      </div>
+      <div class="winbar">${wins}${holes||
+        '<span class="muted">暂无在途窗口（已越过屏障的窗口被回收出在途集合）</span>'}</div>
+      <div class="meta mono">筛选 ${esc(JSON.stringify(t.filter))}</div>
+    </div>`;
+  }).join('') || '<span class="muted">尚无租户</span>';
+}
+async function shrink(id){
+  const v = prompt('设置租户 '+id+' 的最大在途窗口数（收缩不会抢走有效持有者）','1');
+  if(v===null) return;
+  const n = parseInt(v,10);
+  if(!(n>=1)){ msg('需要正整数',true); return; }
+  try{
+    const r = await api('/v1/admin/tenants/'+encodeURIComponent(id)+
+      '/max-inflight', {method:'POST', body:JSON.stringify({max_inflight:n})});
+    msg(r.shrink_pending
+      ? ('已收缩但有 '+r.inflight+' 个窗口仍在途：不抢占，等其提交')
+      : ('上限已设为 '+r.max_inflight));
+    refresh();
+  }catch(e){ msg(e.message,true); }
+}
+async function forceExpire(id, did){
+  if(!confirm('强制窗口 '+did.slice(0,16)+' 立即到期以便新 worker 接管？')) return;
+  try{
+    await api('/v1/admin/tenants/'+encodeURIComponent(id)+'/deliveries/'+
+      encodeURIComponent(did)+'/force-expire',
+      {method:'POST', body:JSON.stringify({reason:'ops'})});
+    msg('窗口已可被接管，旧持有者提交将被拒绝'); refresh();
+  }catch(e){ msg(e.message,true); }
 }
 function renderEvents(ev){
   document.getElementById('events').innerHTML = (ev||[]).slice().reverse().map(e=>{
@@ -202,9 +259,11 @@ async function createTenant(){
   const t = document.getElementById('nfilter').value.trim();
   if(t){ try{ filter=JSON.parse(t); }catch(e){ msg('筛选 JSON 非法',true); return; } }
   try{
+    const n = parseInt(document.getElementById('ninf').value,10);
     const r = await api('/v1/admin/tenants', {method:'POST',
       body:JSON.stringify({tenant_id:document.getElementById('nid').value.trim(),
-        name:document.getElementById('nname').value.trim(), filter})});
+        name:document.getElementById('nname').value.trim(),
+        max_inflight:(n>=1?n:8), filter})});
     document.getElementById('created').textContent =
       '租户令牌（仅显示一次）：\n'+r.token;
     refresh();

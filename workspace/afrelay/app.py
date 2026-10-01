@@ -23,6 +23,7 @@ from .upstream import GatewayClient
 
 DEFAULT_TTL = 30
 DEFAULT_BATCH = 100
+DEFAULT_MAX_INFLIGHT = 8
 
 
 def _write_0600(path: str, data: dict) -> None:
@@ -38,6 +39,7 @@ def bootstrap(home: str, *, upstream_url: str, upstream_token: str,
               gateway_secrets_path: str | None = None,
               default_ttl_seconds: int = DEFAULT_TTL,
               batch_size: int = DEFAULT_BATCH,
+              default_max_inflight: int = DEFAULT_MAX_INFLIGHT,
               force: bool = False) -> dict:
     os.makedirs(home, exist_ok=True)
     secrets_path = os.path.join(home, "secrets.json")
@@ -70,6 +72,7 @@ def bootstrap(home: str, *, upstream_url: str, upstream_token: str,
         "gateway_secrets_path": gateway_secrets_path,
         "default_ttl_seconds": int(default_ttl_seconds),
         "batch_size": int(batch_size),
+        "default_max_inflight": int(default_max_inflight),
     }
     _write_0600(config_path, config)
 
@@ -125,4 +128,6 @@ def open_relay(home: str, *, with_client: bool = True,
         conn, client, relay_secrets["relay_packet_secret"],
         default_ttl_seconds=int(config.get("default_ttl_seconds", DEFAULT_TTL)),
         batch_size=int(config.get("batch_size", DEFAULT_BATCH)),
+        default_max_inflight=int(config.get("default_max_inflight",
+                                           DEFAULT_MAX_INFLIGHT)),
         clock=clock)

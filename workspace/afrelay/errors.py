@@ -50,15 +50,28 @@ class FilterLocked(RelayError):
 
 
 class LeaseConflict(RelayError):
-    """另一个 consumer 持有当前活动短租约（双消费者抢租约）。"""
+    """租户的全部窗口槽位都被**其他** consumer 有效持有（无可接管窗口）。"""
 
     code = "lease_conflict"
     status = 409
     reject_reason = "lease_conflict"
 
 
+class InFlightCapReached(RelayError):
+    """达到该租户最大在途窗口数，且没有可重放/可接管的窗口；稍后重试。
+
+    与 :class:`LeaseConflict` 的区别：调用方往往**自己**也持有窗口（并行
+    处理时这是常态），只是没有空余槽位；这不是争抢冲突而是背压。
+    收缩生效后同样走到这里——已发放的窗口绝不被抢走。
+    """
+
+    code = "inflight_cap_reached"
+    status = 409
+    reject_reason = "inflight_cap_reached"
+
+
 class AckEndMismatch(RelayError):
-    """确认位置不是当前包末端（跳段确认）。"""
+    """确认位置不是窗口末端（越过窗口末端/部分确认/跳段）。"""
 
     code = "ack_end_mismatch"
     status = 409
@@ -86,8 +99,18 @@ class FilterInvalid(RelayError):
     status = 400
 
 
+class InvalidConfig(RelayError):
+    code = "invalid_config"
+    status = 400
+
+
 class TenantNotFound(RelayError):
     code = "tenant_not_found"
+    status = 404
+
+
+class DeliveryNotFound(RelayError):
+    code = "delivery_not_found"
     status = 404
 
 
