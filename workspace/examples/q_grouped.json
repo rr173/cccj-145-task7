@@ -1,0 +1,7 @@
+{
+  "type": "grouped_count",
+  "epsilon": 0.8,
+  "delta": 0.0,
+  "group_by": ["city"],
+  "filter": {"op": "cmp", "column": "active", "predicate": "=", "value": true}
+}

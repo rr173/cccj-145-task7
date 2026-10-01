@@ -1,0 +1,8 @@
+{
+  "type": "histogram",
+  "epsilon": 0.7,
+  "delta": 1e-6,
+  "column": "salary",
+  "bin_edges": [null, 100000, 200000, 400000, null],
+  "filter": {"op": "is_null", "column": "age", "negated": true}
+}

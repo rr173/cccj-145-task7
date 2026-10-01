@@ -1,0 +1,16 @@
+{
+  "statements": [
+    {
+      "snapshot": {"name": "employees", "version": "v1"},
+      "query": {
+        "type": "count",
+        "epsilon": 0.4,
+        "filter": {"op": "cmp", "column": "city", "predicate": "=", "value": "Beijing"}
+      }
+    },
+    {
+      "snapshot": {"name": "employees", "version": "v1"},
+      "query": {"type": "grouped_count", "epsilon": 0.5, "group_by": ["city"]}
+    }
+  ]
+}

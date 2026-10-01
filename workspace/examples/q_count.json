@@ -1,0 +1,12 @@
+{
+  "type": "count",
+  "epsilon": 0.5,
+  "delta": 0.0,
+  "filter": {
+    "op": "and",
+    "args": [
+      {"op": "cmp", "column": "city", "predicate": "=", "value": "Beijing"},
+      {"op": "cmp", "column": "active", "predicate": "=", "value": true}
+    ]
+  }
+}

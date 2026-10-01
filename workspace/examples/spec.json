@@ -1,0 +1,21 @@
+{
+  "name": "employees",
+  "version": "2026-Q3",
+  "max_groups": 200,
+  "columns": [
+    {"name": "id", "dtype": "integer", "filterable": false},
+    {"name": "city", "dtype": "text", "groupable": true,
+     "domain": ["Beijing", "Shanghai", "Shenzhen", "Hangzhou"]},
+    {"name": "dept", "dtype": "text", "groupable": true,
+     "domain": ["eng", "sales", "hr", "finance"]},
+    {"name": "salary", "dtype": "integer", "filterable": true},
+    {"name": "age", "dtype": "integer", "filterable": true},
+    {"name": "active", "dtype": "boolean", "filterable": true}
+  ],
+  "bin_sets": [
+    {"name": "salary_bands", "column": "salary",
+     "edges": [null, 100000, 200000, 400000, null]},
+    {"name": "age_bands", "column": "age",
+     "edges": [null, 30, 40, 50, null]}
+  ]
+}
